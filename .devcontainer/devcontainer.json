@@ -1,0 +1,74 @@
+{
+  // ===========================================================================
+  // livetv dev container - the only configuration.
+  //
+  // This file lives at .devcontainer/devcontainer.json because that is the path
+  // Codespaces and the dev container editor look for: "Edit container" and
+  // "New with options" both resolve here. Subdirectory configs only exist to
+  // offer a choice between environments, which this repository does not need.
+  //
+  // Ubuntu 24.04 (~1 GB) + JDK 21 + Android SDK 36 + opencode + NetBird.
+  // The Android SDK is installed at postCreate (~300 MiB transfer: cmdline-tools,
+  // platform-tools, platform 36, build-tools 36). Emulator images and the NDK
+  // are deliberately absent - they are the multi-GB part of an SDK install.
+  // ===========================================================================
+  "name": "livetv (netbird + android)",
+  "image": "mcr.microsoft.com/devcontainers/base:ubuntu-24.04",
+
+  "features": {
+    "ghcr.io/devcontainers/features/java:1": {
+      "version": "21",
+      "installGradle": false,
+      "installMaven": false
+    }
+  },
+
+  // Kernel-mode WireGuard needs NET_ADMIN + a tun device. MKNOD lets post-create.sh
+  // create /dev/net/tun itself, which is safer than "runArgs":
+  // ["--device=/dev/net/tun"]: that makes codespace creation fail outright when
+  // the host has no such node.
+  "capAdd": ["NET_ADMIN", "NET_RAW", "SYS_RESOURCE", "MKNOD"],
+
+  "init": true,
+
+  "mounts": [
+    // Peer identity (default.json, WireGuard keys, profiles) survives rebuilds,
+    // so a rebuild reconnects as the same peer and spends no setup key.
+    {
+      "source": "netbird-${devcontainerId}",
+      "target": "/var/lib/netbird",
+      "type": "volume"
+    },
+    // Gradle caches survive rebuilds; biggest build-time win available.
+    { "source": "gradle-cache", "target": "/opt/gradle-cache", "type": "volume" }
+  ],
+
+  "remoteEnv": {
+    "ANDROID_HOME": "/usr/local/lib/android/sdk",
+    "GRADLE_USER_HOME": "/opt/gradle-cache",
+    "PATH": "${containerEnv:PATH}:/usr/local/lib/android/sdk/cmdline-tools/latest/bin:/usr/local/lib/android/sdk/platform-tools"
+  },
+
+  // Recommended secrets. Codespaces prompts for these and stores the values in
+  // the user's own settings, so a public repository never has to carry them.
+  "secrets": {
+    "NETBIRD_SETUP_KEY": {
+      "description": "NetBird setup key. Must be reusable - a one-off key only ever enrolls one codespace."
+    },
+    "OLLAMA_API_KEY": {
+      "description": "Ollama Cloud key, read by opencode as OLLAMA_API_KEY."
+    }
+  },
+
+  "postCreateCommand": "bash config/post-create.sh",
+
+  // sudo resets the environment, so the key has to be forwarded explicitly.
+  // Both spellings are forwarded because either may be the secret's name.
+  "postStartCommand": "if [ -x /usr/local/bin/netbird-up ]; then sudo env NETBIRD_KEY=\"$NETBIRD_KEY\" NETBIRD_SETUP_KEY=\"$NETBIRD_SETUP_KEY\" CODESPACE_NAME=\"$CODESPACE_NAME\" /usr/local/bin/netbird-up; fi",
+
+  "customizations": {
+    "vscode": {
+      "extensions": ["fwcd.kotlin", "vscjava.vscode-gradle"]
+    }
+  }
+}

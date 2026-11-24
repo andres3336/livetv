@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+# =============================================================================
+# livetv - bring NetBird up inside the dev container
+#
+# Invoked by postStartCommand through sudo, and safe to run by hand:
+#   sudo netbird-up
+#
+# State lives in /var/lib/netbird, which is a mounted volume, so:
+#   rebuild / restart -> identity already there -> reconnect, no setup key spent
+#   new codespace     -> no volume -> registers with NETBIRD_KEY/NETBIRD_SETUP_KEY
+#
+# PID 1 here is docker-init, not systemd, so the daemon is started detached
+# instead of via "netbird service start".
+# =============================================================================
+set -uo pipefail
+
+# NETBIRD_KEY is the preferred name; NETBIRD_SETUP_KEY is accepted so either
+# spelling of the Codespaces secret works.
+KEY="${NETBIRD_KEY:-${NETBIRD_SETUP_KEY:-}}"
+HOST="cs-${CODESPACE_NAME:-$(hostname -s)}"
+STATE_DIR="${NB_STATE_DIR:-/var/lib/netbird}"
+
+# Without a tun node NetBird falls back to netstack. Create it when we can.
+if [ -e /dev/net/tun ] || mknod /dev/net/tun c 10 200 2>/dev/null; then
+  chmod 666 /dev/net/tun 2>/dev/null || true
+fi
+
+has_identity() {
+  [ -s "$STATE_DIR/default.json" ] && return 0
+  ls "$STATE_DIR"/profiles.v1/*.json >/dev/null 2>&1
+}
+
+if ! pgrep -x netbird >/dev/null 2>&1; then
+  mkdir -p "$STATE_DIR" /var/log/netbird
+  setsid netbird service run --log-file /var/log/netbird/client.log \
+    </dev/null >/dev/null 2>&1 &
+
+  # --check live only proves the daemon answers the status request.
+  for _ in $(seq 1 15); do
+    netbird status -C live >/dev/null 2>&1 && break
+    sleep 1
+  done
+fi
+
+# An existing identity reconnects on its own; give it a moment before deciding
+# that a join is needed. --check startup means "management and signal are
+# connected", which is what we actually care about.
+if has_identity; then
+  for _ in $(seq 1 15); do
+    if netbird status -C startup >/dev/null 2>&1; then
+      echo "netbird: already connected ($(netbird status --ipv4 2>/dev/null | head -2 | tr '\n' ' '))"
+      exit 0
+    fi
+    sleep 1
+  done
+fi
+
+if [ -z "$KEY" ]; then
+  echo "netbird: not connected, and neither NETBIRD_KEY nor NETBIRD_SETUP_KEY is set - not joining"
+  exit 1
+fi
+
+# --disable-dns keeps NetBird away from /etc/resolv.conf: rewriting it breaks
+# the container's own name resolution, and adb targets are IPs anyway.
+netbird up --setup-key "$KEY" --hostname "$HOST" --disable-dns \
+  || { echo "netbird: join failed, see /var/log/netbird/client.log"; exit 1; }
+
+netbird status | sed -n '1,12p'
